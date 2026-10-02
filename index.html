@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Sensor Interactive Particle LCD</title>
+    
+    <!-- Load Library MediaPipe & Drawing Utils via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #050505;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .main-container {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Bagian Kiri: LCD Hitam Partikel */
+        .lcd-panel {
+            flex: 1;
+            background-color: #000000;
+            position: relative;
+            border-right: 2px solid #222222;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #particle-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Bagian Kanan: Tampilan Kamera */
+        .camera-panel {
+            flex: 1;
+            background-color: #111111;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #input-video {
+            display: none;
+        }
+
+        #camera-canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Efek Cermin */
+        }
+
+        /* Status UI Info */
+        .status-badge {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid #ff0055;
+            color: #ff0055;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            letter-spacing: 1px;
+            z-index: 10;
+        }
+
+        @media (max-width: 768px) {
+            .main-container {
+                flex-direction: column-reverse;
+            }
+            .lcd-panel {
+                border-right: none;
+                border-top: 2px solid #222222;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="main-container">
+        <!-- Panel Kiri: LCD Hitam -->
+        <div class="lcd-panel">
+            <canvas id="particle-canvas"></canvas>
+        </div>
+
+        <!-- Panel Kanan: Kamera Depan + Sensor Tangan -->
+        <div class="camera-panel">
+            <div class="status-badge" id="status-text">SYSTEM READY</div>
+            <video id="input-video" autoplay playsinline></video>
+            <canvas id="camera-canvas"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input-video');
+        const cameraCanvas = document.getElementById('camera-canvas');
+        const cameraCtx = cameraCanvas.getContext('2d');
+
+        const particleCanvas = document.getElementById('particle-canvas');
+        const particleCtx = particleCanvas.getContext('2d');
+        const statusText = document.getElementById('status-text');
+
+        let particles = [];
+        const numParticles = 2500; // Jumlah partikel diperbanyak agar tulisan sangat jelas
+        let targetText = "";
+        let currentGesture = "NONE";
+
+        function resizeCanvases() {
+            cameraCanvas.width = cameraCanvas.clientWidth;
+            cameraCanvas.height = cameraCanvas.clientHeight;
+
+            particleCanvas.width = particleCanvas.clientWidth;
+            particleCanvas.height = particleCanvas.clientHeight;
+            
+            initParticles();
+            if (targetText !== "") {
+                generateTextTargets(targetText);
+            }
+        }
+        window.addEventListener('resize', resizeCanvases);
+
+        // --- 1. LOGIKA PARTIKEL / BUTIRAN MERAH ---
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.targetX = x;
+                this.targetY = y;
+                this.vx = (Math.random() - 0.5) * 1.5;
+                this.vy = (Math.random() - 0.5) * 1.5;
+                this.size = Math.random() * 1.8 + 1.2;
+                this.color = '#ff1a40';
+            }
+
+            update() {
+                if (currentGesture === "NONE") {
+                    this.x += this.vx;
+                    this.y += this.vy;
+
+                    if (this.x < 0 || this.x > particleCanvas.width) this.vx *= -1;
+                    if (this.y < 0 || this.y > particleCanvas.height) this.vy *= -1;
+                } else {
+                    // Pergerakan magnetik yang halus dan presisi
+                    this.x += (this.targetX - this.x) * 0.12;
+                    this.y += (this.targetY - this.y) * 0.12;
+                }
+            }
+
+            draw() {
+                particleCtx.fillStyle = this.color;
+                particleCtx.beginPath();
+                particleCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                particleCtx.fill();
+            }
+        }
+
+        function initParticles() {
+            particles = [];
+            for (let i = 0; i < numParticles; i++) {
+                let rx = Math.random() * particleCanvas.width;
+                let ry = Math.random() * particleCanvas.height;
+                particles.push(new Particle(rx, ry));
+            }
+        }
+
+        // Pembentukan Teks yang Jelas & Terbagi Baris
+        function generateTextTargets(text) {
+            targetText = text;
+            const offscreenCanvas = document.createElement('canvas');
+            const offCtx = offscreenCanvas.getContext('2d');
+            
+            offscreenCanvas.width = particleCanvas.width;
+            offscreenCanvas.height = particleCanvas.height;
+
+            offCtx.fillStyle = '#ffffff';
+            offCtx.textAlign = 'center';
+            offCtx.textBaseline = 'middle';
+
+            // Pengaturan Font dan Pemisahan Baris Teks agar Keterbacaan Maksimal
+            if (text === "hallo perkenalkan saya ikhsan") {
+                let fontSize = Math.floor(particleCanvas.width / 11);
+                if (fontSize < 20) fontSize = 20;
+                offCtx.font = `bold ${fontSize}px sans-serif`;
+
+                const lines = ["hallo", "perkenalkan saya", "ikhsan"];
+                const lineSpacing = fontSize * 1.3;
+                const startY = (particleCanvas.height / 2) - lineSpacing;
+
+                lines.forEach((line, index) => {
+                    offCtx.fillText(line, particleCanvas.width / 2, startY + (index * lineSpacing));
+                });
+            } else {
+                let fontSize = Math.floor(particleCanvas.width / 7);
+                if (fontSize < 24) fontSize = 24;
+                offCtx.font = `bold ${fontSize}px sans-serif`;
+                offCtx.fillText(text, particleCanvas.width / 2, particleCanvas.height / 2);
+            }
+
+            const imageData = offCtx.getImageData(0, 0, particleCanvas.width, particleCanvas.height).data;
+            const validPixels = [];
+
+            // Pindai piksel dengan jarak (step) lebih padat agar teks tegas
+            const step = 3;
+            for (let y = 0; y < particleCanvas.height; y += step) {
+                for (let x = 0; x < particleCanvas.width; x += step) {
+                    const index = (y * particleCanvas.width + x) * 4;
+                    if (imageData[index + 3] > 128) {
+                        validPixels.push({ x: x, y: y });
+                    }
+                }
+            }
+
+            for (let i = 0; i < particles.length; i++) {
+                if (validPixels.length > 0) {
+                    const targetIndex = i % validPixels.length;
+                    particles[i].targetX = validPixels[targetIndex].x;
+                    particles[i].targetY = validPixels[targetIndex].y;
+                } else {
+                    particles[i].targetX = Math.random() * particleCanvas.width;
+                    particles[i].targetY = Math.random() * particleCanvas.height;
+                }
+            }
+        }
+
+        function animateParticles() {
+            particleCtx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+            particleCtx.fillRect(0, 0, particleCanvas.width, particleCanvas.height);
+
+            for (let p of particles) {
+                p.update();
+                p.draw();
+            }
+            requestAnimationFrame(animateParticles);
+        }
+
+        // --- 2. DETEKSI GESTUR & VISUALISASI SENSOR TANGAN ---
+        function isFistGesture(landmarks) {
+            const indexFist = landmarks[8].y > landmarks[6].y;
+            const middleFist = landmarks[12].y > landmarks[10].y;
+            const ringFist = landmarks[16].y > landmarks[14].y;
+            const pinkyFist = landmarks[20].y > landmarks[18].y;
+            return indexFist && middleFist && ringFist && pinkyFist;
+        }
+
+        function isVictoryGesture(landmarks) {
+            const indexUp = landmarks[8].y < landmarks[6].y;
+            const middleUp = landmarks[12].y < landmarks[10].y;
+            const ringDown = landmarks[16].y > landmarks[14].y;
+            const pinkyDown = landmarks[20].y > landmarks[18].y;
+            return indexUp && middleUp && ringDown && pinkyDown;
+        }
+
+        function onResults(results) {
+            cameraCtx.save();
+            cameraCtx.clearRect(0, 0, cameraCanvas.width, cameraCanvas.height);
+            cameraCtx.drawImage(results.image, 0, 0, cameraCanvas.width, cameraCanvas.height);
+
+            let detectedGesture = "NONE";
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    
+                    // GAMBAR SENSOR / SKELETON TANGAN (Sesuai Foto)
+                    drawConnectors(cameraCtx, landmarks, HAND_CONNECTIONS, {
+                        color: '#ffffff',
+                        lineWidth: 2
+                    });
+                    
+                    drawLandmarks(cameraCtx, landmarks, {
+                        color: '#00ffcc',
+                        fillColor: '#00ffcc',
+                        radius: 4
+                    });
+
+                    // Cek Gestur
+                    if (isFistGesture(landmarks)) {
+                        detectedGesture = "FIST";
+                    } else if (isVictoryGesture(landmarks)) {
+                        detectedGesture = "VICTORY";
+                    }
+                }
+            }
+
+            if (detectedGesture !== currentGesture) {
+                currentGesture = detectedGesture;
+
+                if (currentGesture === "FIST") {
+                    statusText.innerText = "GESTURE: FIST (✊)";
+                    statusText.style.borderColor = "#ff0055";
+                    statusText.style.color = "#ff0055";
+                    generateTextTargets("I LOVE YOU");
+                } else if (currentGesture === "VICTORY") {
+                    statusText.innerText = "GESTURE: PEACE (✌️)";
+                    statusText.style.borderColor = "#00ffcc";
+                    statusText.style.color = "#00ffcc";
+                    generateTextTargets("hallo perkenalkan saya ikhsan");
+                } else {
+                    statusText.innerText = "SEARCHING GESTURE...";
+                    statusText.style.borderColor = "#ffffff";
+                    statusText.style.color = "#ffffff";
+                    targetText = "";
+                }
+            }
+
+            cameraCtx.restore();
+        }
+
+        // --- 3. INISIALISASI MEDIAPIPE ---
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720
+        });
+
+        window.addEventListener('load', () => {
+            resizeCanvases();
+            animateParticles();
+            camera.start().catch(err => {
+                statusText.innerText = "CAMERA ERROR: USE HTTPS";
+                console.error(err);
+            });
+        });
+    </script>
+</body>
+</html>
